@@ -1,18 +1,59 @@
 // =====================================================================
-// 야생동물 감지 시스템 - 아두이노 센서 펌웨어
-// Geophone (A0) 단일 채널, 100Hz 안정적 샘플링
+// 야생동물 감지 시스템 - 아두이노 센서 펌웨어 (LCD 경보 시스템 추가)
+// Geophone (A0) 단일 채널, 100Hz 안정적 샘플링 + I2C LCD 제어
 // =====================================================================
 
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// I2C 주소가 0x27 또는 0x3F인 1602 LCD 객체 생성
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
 void setup() {
-  Serial.begin(115200); // 고속 통신 (기존 9600 → 115200 baud)
+  Serial.begin(115200); // 고속 통신
+  
+  // LCD 초기화
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  
+  // 초기 대기 화면 표시 (감지되지 않았을 때)
+  lcd.setCursor(0, 0);
+  lcd.print("Monitering...");
+  lcd.setCursor(0, 1);
+  lcd.print("Val: 0");
+  lcd.noBacklight(); // 감지 안 될 때는 백라이트 off 상태
 }
 
 void loop() {
   unsigned long t_start = millis(); // 루프 시작 시간 기록
 
+  // ── PC(Python)로부터 LCD 제어 명령어 수신 처리 ─────────────────
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.startsWith("DETECT:")) {
+      // 감지되었을 때: DETECT:XXX (첫번째 줄에 Animal Detected! / 파란색 백라이트 on / 두번째 줄에 Val: XXX)
+      String valStr = cmd.substring(7);
+      lcd.backlight(); // 파란색 백라이트 on 상태
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Animal Detected!");
+      lcd.setCursor(0, 1);
+      lcd.print("Val: " + valStr);
+    } 
+    else if (cmd.equals("RESET")) {
+      // 감지되지 않았을 때 (첫번째 줄에 Monitering... / 백라이트 off / 두번째 줄에 Val: 0)
+      lcd.noBacklight(); // 백라이트 off 상태
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Monitering...");
+      lcd.setCursor(0, 1);
+      lcd.print("Val: 0");
+    }
+  }
+
   // ── A0: Geophone (고임피던스 수동 코일 센서) ────────────────────────
-  // 노이즈를 줄이고 안정적인 측정을 위해 5번 오버샘플링(평균) 수행
-  // (기존 10번 × 1ms = 10ms → 5번 × 1ms = 5ms로 줄여 루프 여유 확보)
   long sum = 0;
   for (int i = 0; i < 5; i++) {
     sum += analogRead(A0);
@@ -24,8 +65,6 @@ void loop() {
   Serial.println(val0);
 
   // ── 정확히 100Hz(10ms 주기) 유지를 위한 나머지 대기 ────────────────
-  // 루프 내 처리(오버샘플링 5ms + Serial 전송 ~1ms 등)에 소요된 시간을
-  // 빼고 남은 시간만큼 정확히 대기하여 주기를 맞춥니다.
   unsigned long elapsed = millis() - t_start;
   if (elapsed < 10) {
     delay(10 - elapsed);

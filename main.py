@@ -803,8 +803,8 @@ def main():
                         data_updated = True
 
             current_time = time.time()
-            # 버퍼가 절반 이상 채워진 뒤에만 분석 시작 (초기 0-패딩 왜곡 방지)
-            if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE // 2 and \
+            # 버퍼가 완전히 채워진 뒤에만 분석 시작 (초기 0-패딩 왜곡 방지 및 Matplotlib 플롯 크기 불일치 방지)
+            if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE and \
                     (current_time - last_render_time >= config.RENDER_INTERVAL):
                 # 1. 지오폰 분석 파이프라인
                 raw_signal_geo = np.array(data_buffer_geo)
@@ -817,7 +817,7 @@ def main():
                 avg_dur_geo = sum(durations_geo)/len(durations_geo) if durations_geo else 0.0
                 filtered_signal_geo, M_t_geo, clean_fft_mag_geo, transient_detected_geo = sdft_filter_geo.process(signal_geo)
                 
-                white_noise_geo = np.random.normal(0, opt_sigma_geo, config.BUFFER_SIZE)
+                white_noise_geo = np.random.normal(0, opt_sigma_geo, len(filtered_signal_geo))
                 x_arr_tot_geo, x_arr_noi_geo, N_t_geo, K_t_geo = bistable_engine_geo.process_buffer(filtered_signal_geo, white_noise_geo)
                 net_events_geo = max(0, N_t_geo - K_t_geo)
                 
@@ -841,15 +841,25 @@ def main():
                     N_t_geo, K_t_geo, net_events_geo, acf_r_geo, cadence_geo
                 )
 
-                # 3. 최종 검출 결과 출력 (터미널 출력만 수행)
-                is_wildlife_confirmed = (net_events_geo >= config.ALERT_NET_EVENTS) and (acf_r_geo >= config.ACF_R_THRESHOLD)
-                is_impact_detected    = (net_events_geo >= config.ALERT_NET_EVENTS)
+                # 3. 최종 검출 결과 출력 및 아두이노 LCD 제어 (R >= 0.6 일 때 감지 판정)
+                is_wildlife_confirmed = (acf_r_geo >= 0.6)
 
-                if is_impact_detected:
-                    if is_wildlife_confirmed:
-                        print(f'🐾 [동물 확정] net={net_events_geo}, ACF_R={acf_r_geo:.2f}')
-                    else:
-                        print(f'⚡ [충격 감지] net={net_events_geo} (리듬 미확인)')
+                if is_wildlife_confirmed:
+                    # R이 0.6 이상인 경우 동물 발걸음으로 확정
+                    # 실시간 센서값(영점 보정된 지오폰 진동 크기)을 아두이노 LCD에 'Val: XXX'로 출력하기 위해 전송
+                    # 지오폰의 전압 크기를 직관적으로 띄우기 위해 절대값의 10배 크기로 스케일링하거나 raw_centered 값의 절대값을 보냅니다.
+                    val_to_show = int(abs(raw_centered))
+                    print(f'🐾 [동물 확정] ACF_R={acf_r_geo:.2f} >= 0.6, Val={val_to_show}')
+                    try:
+                        ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                    except Exception as e:
+                        print(f"⚠️ LCD 전송 오류: {e}")
+                else:
+                    # 감지되지 않았을 때
+                    try:
+                        ser.write("RESET\n".encode('utf-8'))
+                    except Exception as e:
+                        pass
 
                 last_render_time = current_time
 
