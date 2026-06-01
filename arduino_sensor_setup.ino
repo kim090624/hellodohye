@@ -42,14 +42,15 @@ void loop() {
       lcd.setCursor(0, 1);
       lcd.print("Val: " + valStr);
     } 
-    else if (cmd.equals("RESET")) {
-      // 감지되지 않았을 때 (첫번째 줄에 Monitering... / 백라이트 off / 두번째 줄에 Val: 0)
+    else if (cmd.startsWith("RESET:")) {
+      // 감지되지 않았을 때 (첫번째 줄에 Monitering... / 백라이트 off / 두번째 줄에 파이썬에서 보낸 원본 값 표시)
+      String valStr = cmd.substring(6);
       lcd.noBacklight(); // 백라이트 off 상태
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Monitering...");
       lcd.setCursor(0, 1);
-      lcd.print("Val: 0");
+      lcd.print("Val: " + valStr);
     }
   }
 

@@ -760,6 +760,7 @@ def main():
     # 지오폰 파이프라인 컴포넌트
     # deque(maxlen)을 사용해 초기 0-패딩 편향 없이 실제 샘플만 유지합니다.
     data_buffer_geo   = deque(maxlen=config.BUFFER_SIZE)
+    raw_val_buffer_geo = deque(maxlen=config.BUFFER_SIZE)
     step_analyzer_geo = StepDurationAnalyzer()
     sdft_filter_geo   = SDFTAdaptiveFilter()
     bistable_engine_geo = BistableDoubleWellEngine()
@@ -776,19 +777,14 @@ def main():
 
     ui.setup_live_detection(on_manual_band_change=on_band_change)
     last_render_time = time.time()
+    last_detection_time = 0.0
     print('시스템 엔진 가동 중 (지오폰 A0 분석)...')
 
     try:
         while ui.is_alive():
             data_updated = False
-            # 버퍼에 쌓인 오래된 데이터를 모두 버리고 최신 값 1개만 읽습니다.
-            # (UI 업데이트/sleep 사이에 누적된 지연 샘플을 방지)
-            if ser.in_waiting > 0:
-                # 현재 버퍼에 쌓인 줄 수 추정 → 마지막 1개만 남기고 앞은 버림
-                lines_waiting = ser.in_waiting // 6  # "512\r\n" 최대 6바이트 기준
-                for _ in range(max(0, lines_waiting - 1)):
-                    ser.readline()  # 오래된 줄 버림
-
+            # 쌓인 데이터를 모두 읽어서 버퍼에 정상적인 속도(100Hz)로 채웁니다.
+            while ser.in_waiting > 0:
                 ln = ser.readline().decode('utf-8', errors='ignore').strip()
                 if ln:
                     val = parse_serial_line(ln, 0)
@@ -800,6 +796,7 @@ def main():
                         else:
                             _dc_ema_geo[0] = (1.0 - _DC_ALPHA) * _dc_ema_geo[0] + _DC_ALPHA * raw_centered
                         data_buffer_geo.append(raw_centered - _dc_ema_geo[0])
+                        raw_val_buffer_geo.append(float(val))
                         data_updated = True
 
             current_time = time.time()
@@ -826,7 +823,7 @@ def main():
 
                 # 2. GUI 업데이트 (지오폰 데이터 전달)
                 ui.update(
-                    filtered_signal_geo,
+                    np.array(raw_val_buffer_geo), # 원래의 val 값을 그래프에 띄움
                     x_arr_tot_geo,
                     M_t_geo,
                     clean_fft_mag_geo,
@@ -843,21 +840,24 @@ def main():
 
                 # 3. 최종 검출 결과 출력 및 아두이노 LCD 제어 (R >= 0.6 일 때 감지 판정)
                 is_wildlife_confirmed = (acf_r_geo >= 0.6)
-
                 if is_wildlife_confirmed:
-                    # R이 0.6 이상인 경우 동물 발걸음으로 확정
-                    # 실시간 센서값(영점 보정된 지오폰 진동 크기)을 아두이노 LCD에 'Val: XXX'로 출력하기 위해 전송
-                    # 지오폰의 전압 크기를 직관적으로 띄우기 위해 절대값의 10배 크기로 스케일링하거나 raw_centered 값의 절대값을 보냅니다.
-                    val_to_show = int(abs(raw_centered))
-                    print(f'🐾 [동물 확정] ACF_R={acf_r_geo:.2f} >= 0.6, Val={val_to_show}')
+                    last_detection_time = current_time
+
+                val_to_show = int(float(val)) if val is not None else 0
+
+                # 마지막 감지 후 2초 동안은 불 켜진 상태(DETECT) 유지
+                if current_time - last_detection_time < 2.0:
+                    if is_wildlife_confirmed:
+                        print(f'🐾 [동물 확정] ACF_R={acf_r_geo:.2f} >= 0.6, Val={val_to_show}')
                     try:
                         ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
                     except Exception as e:
                         print(f"⚠️ LCD 전송 오류: {e}")
                 else:
-                    # 감지되지 않았을 때
+                    # 2초가 지나면 감지 해제 (RESET)
                     try:
-                        ser.write("RESET\n".encode('utf-8'))
+                        # 평상시에도 LCD에 val 값이 뜨도록 RESET 명령 뒤에 값을 붙여서 전송합니다.
+                        ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
                     except Exception as e:
                         pass
 

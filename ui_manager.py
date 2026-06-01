@@ -514,9 +514,12 @@ class WildlifeUI:
                N_t_geo, K_t_geo, net_events_geo, acf_r_geo, cadence_geo):
 
         self.line_time_clean_geo.set_ydata(filtered_signal_geo)
-        mx_geo = np.max(np.abs(filtered_signal_geo))
+        
+        # 영점(512 등) 근처를 유지하도록 y축 중심 이동
+        center_val = np.mean(filtered_signal_geo) if len(filtered_signal_geo) > 0 else 512.0
+        mx_geo = np.max(np.abs(filtered_signal_geo - center_val)) if len(filtered_signal_geo) > 0 else 0
         mx = max(mx_geo, 20.0)
-        self.ax1.set_ylim(-mx * 1.3, mx * 1.3)
+        self.ax1.set_ylim(center_val - mx * 1.3, center_val + mx * 1.3)
 
         # Step Event Text
         geo_status = "Rec..." if is_recording_geo else (f"{duration_geo:.2f}s" if step_completed_geo else "Wait")
