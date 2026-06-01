@@ -745,25 +745,117 @@ def main():
             ui._pending_record_dur   = dur
             _run_record_ui(ser, ui)
 
-        elif choice == '5':
-            break   # 실시간 감지로 진입
+        elif choice == '5' or choice == '6':
+            break   # 실시간 감지 또는 비교 모드로 진입
 
     if not ui.is_alive():
         ser.close()
         return
 
-    # ── 실시간 감지 루프 (지오폰 채널 작동) ───────────────────────────
+    # ── 파이프라인 컴포넌트 (공통) ───────────────────────────
     # 지오폰 채널 영점 보정
     zero_geo = auto_calibrate_zero(ser, 0)
     config.CURRENT_ZERO = zero_geo
 
-    # 지오폰 파이프라인 컴포넌트
-    # deque(maxlen)을 사용해 초기 0-패딩 편향 없이 실제 샘플만 유지합니다.
     data_buffer_geo   = deque(maxlen=config.BUFFER_SIZE)
     raw_val_buffer_geo = deque(maxlen=config.BUFFER_SIZE)
-    step_analyzer_geo = StepDurationAnalyzer()
     sdft_filter_geo   = SDFTAdaptiveFilter()
+    
+    _dc_ema_geo = [None]
+    _DC_ALPHA   = 0.002   # 매우 느린 EMA → 0.2% 갱신 = ~500샘플 시정수 (≈5초 @ 100Hz)
+    
+    last_render_time = time.time()
+    last_detection_time = 0.0
+
+    if choice == '6':
+        # ── 실시간 비교 모드 (Mode 6) ───────────────────────────
+        opt_a_geo1 = config.POTENTIAL_A
+        opt_b_geo1 = config.POTENTIAL_B
+        opt_sigma_geo1 = config.SIGMA_NOISE
+        
+        opt_a_geo2 = 0.083
+        opt_b_geo2 = 1.0
+        opt_sigma_geo2 = 13.98
+        
+        bistable_engine1 = BistableDoubleWellEngine()
+        bistable_engine1.a = opt_a_geo1
+        bistable_engine1.b = opt_b_geo1
+        
+        bistable_engine2 = BistableDoubleWellEngine()
+        bistable_engine2.a = opt_a_geo2
+        bistable_engine2.b = opt_b_geo2
+        
+        acf_analyzer1 = ACFPeriodicityAnalyzer()
+        acf_analyzer2 = ACFPeriodicityAnalyzer()
+        
+        ui.setup_comparison_detection()
+        print('시스템 엔진 가동 중 (Mode 6: SR 비교 분석)...')
+        
+        try:
+            while ui.is_alive():
+                data_updated = False
+                while ser.in_waiting > 0:
+                    ln = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if ln:
+                        val = parse_serial_line(ln, 0)
+                        if val is not None:
+                            raw_centered = float(val) - zero_geo
+                            if _dc_ema_geo[0] is None: _dc_ema_geo[0] = raw_centered
+                            else: _dc_ema_geo[0] = (1.0 - _DC_ALPHA) * _dc_ema_geo[0] + _DC_ALPHA * raw_centered
+                            data_buffer_geo.append(raw_centered - _dc_ema_geo[0])
+                            raw_val_buffer_geo.append(float(val))
+                            data_updated = True
+
+                current_time = time.time()
+                if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE and (current_time - last_render_time >= config.RENDER_INTERVAL):
+                    signal_geo = np.array(data_buffer_geo)
+                    signal_geo = signal_geo * (1.0 - np.exp(-np.abs(signal_geo) / 2.5))
+                    
+                    filtered_signal_geo, _, _, _ = sdft_filter_geo.process(signal_geo)
+                    
+                    wn1 = np.random.normal(0, opt_sigma_geo1, len(filtered_signal_geo))
+                    x_tot1, _, n1, k1 = bistable_engine1.process_buffer(filtered_signal_geo, wn1)
+                    nk1 = max(0, n1 - k1)
+                    r1, _ = acf_analyzer1.compute(np.sign(x_tot1))
+                    
+                    wn2 = np.random.normal(0, opt_sigma_geo2, len(filtered_signal_geo))
+                    x_tot2, _, n2, k2 = bistable_engine2.process_buffer(filtered_signal_geo, wn2)
+                    nk2 = max(0, n2 - k2)
+                    r2, _ = acf_analyzer2.compute(np.sign(x_tot2))
+                    
+                    ui.update_comparison(
+                        np.array(raw_val_buffer_geo),
+                        np.sign(x_tot1), n1, k1, nk1, r1,
+                        np.sign(x_tot2), n2, k2, nk2, r2
+                    )
+                    
+                    is_wildlife_confirmed = (r2 >= 0.6)
+                    if is_wildlife_confirmed:
+                        last_detection_time = current_time
+
+                    val_to_show = int(float(val)) if val is not None else 0
+                    if current_time - last_detection_time < 2.0:
+                        try: ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                        except: pass
+                    else:
+                        try: ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
+                        except: pass
+                        
+                    last_render_time = current_time
+
+                ui.root.update()
+                time.sleep(0.001)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            ser.close()
+            ui.close()
+        return
+
+    # ── 실시간 감지 루프 (Mode 5) ───────────────────────────
+    step_analyzer_geo = StepDurationAnalyzer()
     bistable_engine_geo = BistableDoubleWellEngine()
+
     bistable_engine_geo.a = opt_a_geo
     bistable_engine_geo.b = opt_b_geo
     acf_analyzer_geo  = ACFPeriodicityAnalyzer()

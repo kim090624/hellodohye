@@ -29,6 +29,7 @@ MENU_BUTTONS = [
     ('3', '[파라미터 튜닝]', '저장된 파일 불러와 SR 최적화',       '#6c5ce7'),
     ('4', '[신호 녹화]',     '센서 신호를 폴더에 CSV 저장',         '#e17055'),
     ('5', '[실시간 감지]',   '설정된 파라미터로 즉시 가동',         '#fdcb6e'),
+    ('6', '[SR 비교 분석]',  '기본 파라미터 vs 최적 파라미터',      '#e84393'),
 ]
 
 SENSOR_FOLDERS = {
@@ -601,3 +602,94 @@ class WildlifeUI:
 
     def close(self):
         self._on_quit()
+
+    def setup_comparison_detection(self):
+        self._clear()
+        f = self.content
+
+        self.fs          = config.FS
+        self.buffer_size = config.BUFFER_SIZE
+        self.x_time      = np.arange(self.buffer_size)
+
+        fig = Figure(figsize=(12, 7.8), facecolor=BG)
+        ax1 = fig.add_subplot(2, 1, 1, facecolor=PLOT_BG)
+        ax2 = fig.add_subplot(2, 2, 3, facecolor=PLOT_BG)
+        ax3 = fig.add_subplot(2, 2, 4, facecolor=PLOT_BG)
+        self.comp_axes = (ax1, ax2, ax3)
+
+        def _style(ax):
+            ax.tick_params(colors=MUTED)
+            for sp in ax.spines.values(): sp.set_color('#2d2d4e')
+            ax.grid(True, linestyle='--', alpha=0.25, color='#333')
+
+        _style(ax1)
+        self.comp_line_clean, = ax1.plot(self.x_time, np.zeros(self.buffer_size), color='#00cec9', linewidth=1.5)
+        ax1.set_title('[Stage 1] Input Signal (SDFT Filtered + DC)', fontsize=10, fontweight='bold', color='#b2bec3')
+        ax1.set_xlim(0, self.buffer_size - 1)
+        
+        self.comp_alert_text = ax1.text(0.5, 1.1, 'STATUS: MONITORING', transform=ax1.transAxes,
+            fontsize=10, fontweight='bold', color='white', ha='center', va='center',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='#00b894', edgecolor='none', alpha=0.92))
+
+        _style(ax2)
+        self.comp_line_sr1, = ax2.plot(self.x_time, np.zeros(self.buffer_size), color='#e17055', linewidth=1.3)
+        ax2.axhline(0.0, color='#636e72', linestyle='--', linewidth=1.0)
+        ax2.axhline(1.0, color='#27ae60', linestyle=':', linewidth=1.2)
+        ax2.axhline(-1.0, color='#27ae60', linestyle=':', linewidth=1.2)
+        ax2.set_title(f'Left: Default SR (a={config.POTENTIAL_A}, sigma={config.SIGMA_NOISE})', fontsize=10, fontweight='bold', color='#b2bec3')
+        ax2.set_xlim(0, self.buffer_size - 1); ax2.set_ylim(-2.2, 2.2)
+        
+        self.comp_sr_text1 = ax2.text(0.02, 0.88, 'N-K: 0', transform=ax2.transAxes, fontsize=9, color='#2c3e50',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='#e8f8f5', edgecolor='#1abc9c', alpha=0.9))
+        self.comp_acf_text1 = ax2.text(0.02, 0.72, 'ACF R: 0.00', transform=ax2.transAxes, fontsize=9, color='#2c3e50',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='#f5eef8', edgecolor='#9b59b6', alpha=0.9))
+
+        _style(ax3)
+        self.comp_line_sr2, = ax3.plot(self.x_time, np.zeros(self.buffer_size), color='#0984e3', linewidth=1.3)
+        ax3.axhline(0.0, color='#636e72', linestyle='--', linewidth=1.0)
+        ax3.axhline(1.0, color='#27ae60', linestyle=':', linewidth=1.2)
+        ax3.axhline(-1.0, color='#27ae60', linestyle=':', linewidth=1.2)
+        ax3.set_title(f'Right: Optimized SR (a=0.083, sigma=13.98)', fontsize=10, fontweight='bold', color='#b2bec3')
+        ax3.set_xlim(0, self.buffer_size - 1); ax3.set_ylim(-2.2, 2.2)
+
+        self.comp_sr_text2 = ax3.text(0.02, 0.88, 'N-K: 0', transform=ax3.transAxes, fontsize=9, color='#2c3e50',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='#e8f8f5', edgecolor='#1abc9c', alpha=0.9))
+        self.comp_acf_text2 = ax3.text(0.02, 0.72, 'ACF R: 0.00', transform=ax3.transAxes, fontsize=9, color='#2c3e50',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='#f5eef8', edgecolor='#9b59b6', alpha=0.9))
+
+        fig.tight_layout(pad=2.5)
+        cv = FigureCanvasTkAgg(fig, master=f)
+        cv.draw()
+        cv.get_tk_widget().pack(fill='both', expand=True)
+        self.comp_canvas = cv
+        self.root.update()
+
+    def update_comparison(self, display_signal, sr_sig1, N_t1, K_t1, nk1, r1, sr_sig2, N_t2, K_t2, nk2, r2):
+        try:
+            self.comp_line_clean.set_ydata(display_signal)
+            center_val = np.mean(display_signal) if len(display_signal) > 0 else 512.0
+            mx_geo = np.max(np.abs(display_signal - center_val)) if len(display_signal) > 0 else 0
+            mx = max(mx_geo, 20.0)
+            self.comp_axes[0].set_ylim(center_val - mx * 1.3, center_val + mx * 1.3)
+
+            self.comp_line_sr1.set_ydata(sr_sig1)
+            self.comp_sr_text1.set_text(f'N-K: {nk1} (N:{N_t1}, K:{K_t1})')
+            self.comp_acf_text1.set_text(f'ACF R: {r1:.2f}')
+
+            self.comp_line_sr2.set_ydata(sr_sig2)
+            self.comp_sr_text2.set_text(f'N-K: {nk2} (N:{N_t2}, K:{K_t2})')
+            self.comp_acf_text2.set_text(f'ACF R: {r2:.2f}')
+            
+            is_wildlife = (r2 >= config.ACF_R_THRESHOLD)
+            if is_wildlife:
+                self.comp_alert_text.set_text(f'🚨 ANIMAL DETECTED! (R={r2:.2f})')
+                self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#d63031', edgecolor='none', alpha=0.97))
+            else:
+                self.comp_alert_text.set_text('📡 STATUS: MONITORING')
+                self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#00b894', edgecolor='none', alpha=0.92))
+
+            self.comp_canvas.draw()
+            self.comp_canvas.flush_events()
+            self.root.update()
+        except Exception:
+            pass
