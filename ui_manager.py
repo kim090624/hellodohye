@@ -539,10 +539,17 @@ class WildlifeUI:
         self.bypass_label.set_color('#27ae60' if transient_detected_geo else '#b2bec3')
 
         # Alarm triggering via logical-OR
-        is_wildlife_geo = (net_events_geo >= config.ALERT_NET_EVENTS) and (acf_r_geo >= config.ACF_R_THRESHOLD)
-        is_warning_geo = (net_events_geo >= config.ALERT_NET_EVENTS)
+        if config.TEST_MODE:
+            is_wildlife_geo = False
+            is_warning_geo = config.MOBILE_PRESSED
+        else:
+            is_wildlife_geo = (net_events_geo >= config.ALERT_NET_EVENTS) and (acf_r_geo >= config.ACF_R_THRESHOLD)
+            is_warning_geo = (net_events_geo >= config.ALERT_NET_EVENTS)
 
-        if is_wildlife_geo:
+        if config.TEST_MODE and config.MOBILE_PRESSED:
+            self.alert_text.set_text('⚠️ [원격 테스트] 야생동물 감지됨 (MOBILE TRIGGER)')
+            self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#e67e22', edgecolor='none', alpha=0.97))
+        elif is_wildlife_geo:
             self.alert_text.set_text(f'🚨 GEOPHONE CONFIRMED WILDLIFE! (Geo: R={acf_r_geo:.2f})')
             self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#d63031', edgecolor='none', alpha=0.97))
         elif is_warning_geo:
@@ -680,8 +687,17 @@ class WildlifeUI:
             self.comp_sr_text2.set_text(f'N-K: {nk2} (N:{N_t2}, K:{K_t2})')
             self.comp_acf_text2.set_text(f'ACF R: {r2:.2f}')
             
-            is_wildlife = (r2 >= config.ACF_R_THRESHOLD)
-            if is_wildlife:
+            if config.TEST_MODE:
+                is_wildlife = False
+                is_warning_mode6 = config.MOBILE_PRESSED
+            else:
+                is_wildlife = (r2 >= config.ACF_R_THRESHOLD)
+                is_warning_mode6 = False
+
+            if config.TEST_MODE and config.MOBILE_PRESSED:
+                self.comp_alert_text.set_text('⚠️ [원격 테스트] 야생동물 감지됨 (MOBILE TRIGGER)')
+                self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#e67e22', edgecolor='none', alpha=0.97))
+            elif is_wildlife:
                 self.comp_alert_text.set_text(f'🚨 ANIMAL DETECTED! (R={r2:.2f})')
                 self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#d63031', edgecolor='none', alpha=0.97))
             else:

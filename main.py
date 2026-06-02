@@ -34,6 +34,71 @@ LAST_LOADED_ANIMAL_FILE = "알 수 없음"
 LAST_LOADED_NOISE_FILE = "알 수 없음"
 
 
+# ── 모바일 원격 시뮬레이터 서버 정의 ───────────────────
+import http.server
+import socketserver
+import threading
+import json
+
+class MobileSimulatorHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass # 터미널 출력을 깔끔하게 하기 위해 로그 출력 억제
+
+    def do_GET(self):
+        if self.path in ('/', '/footstep_simulator.html'):
+            try:
+                filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'footstep_simulator.html')
+                with open(filepath, 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as e:
+                self.send_error(500, f"Error reading file: {e}")
+        elif self.path == '/api/press':
+            import config
+            config.MOBILE_PRESSED = True
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "pressed"}).encode())
+        elif self.path == '/api/release':
+            import config
+            config.MOBILE_PRESSED = False
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "released"}).encode())
+        else:
+            self.send_error(404, "Not found")
+
+def start_mobile_server():
+    import config
+    if not config.TEST_MODE:
+        return
+    
+    server_address = ('', 8000)
+    try:
+        httpd = http.server.HTTPServer(server_address, MobileSimulatorHandler)
+        server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        server_thread.start()
+        print("\n🚀 [원격 실험 모드] 모바일 웹 시뮬레이터 서버 가동 완료!")
+        print("   동일 와이파이 대역의 스마트폰/패드에서 접속 가능:")
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except:
+            local_ip = "localhost"
+        print(f"   👉 http://{local_ip}:8000/footstep_simulator.html\n")
+    except Exception as e:
+        print(f"⚠️ 모바일 웹 서버 기동 실패 (포트 8000이 사용 중일 수 있음): {e}")
+
+
 def parse_serial_line(ln, channel):
     """아두이노가 보낸 시리얼 데이터(단일값 또는 쉼표 구분값)에서 지정된 채널 값을 추출."""
     if ',' in ln:
@@ -653,6 +718,9 @@ def main():
     # Tkinter UI 생성 (메인 스레드)
     ui = WildlifeUI()
 
+    # 모바일 원격 시뮬레이터 서버 가동 (설정에 따라 분기)
+    start_mobile_server()
+
     # ── 메뉴 루프 ──────────────────────────────────
     while True:
         if not ui.is_alive():
@@ -829,17 +897,27 @@ def main():
                         np.sign(x_tot2), n2, k2, nk2, r2
                     )
                     
-                    is_wildlife_confirmed = (r2 >= 0.6)
-                    if is_wildlife_confirmed:
-                        last_detection_time = current_time
-
-                    val_to_show = int(float(val)) if val is not None else 0
-                    if current_time - last_detection_time < 2.0:
-                        try: ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
-                        except: pass
+                    if config.TEST_MODE:
+                        is_wildlife_confirmed = config.MOBILE_PRESSED
+                        val_to_show = int(float(val)) if val is not None else 0
+                        if is_wildlife_confirmed:
+                            try: ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                            except: pass
+                        else:
+                            try: ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
+                            except: pass
                     else:
-                        try: ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
-                        except: pass
+                        is_wildlife_confirmed = (r2 >= 0.6)
+                        if is_wildlife_confirmed:
+                            last_detection_time = current_time
+
+                        val_to_show = int(float(val)) if val is not None else 0
+                        if current_time - last_detection_time < 2.0:
+                            try: ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                            except: pass
+                        else:
+                            try: ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
+                            except: pass
                         
                     last_render_time = current_time
 
@@ -931,27 +1009,42 @@ def main():
                 )
 
                 # 3. 최종 검출 결과 출력 및 아두이노 LCD 제어 (R >= 0.6 일 때 감지 판정)
-                is_wildlife_confirmed = (acf_r_geo >= 0.6)
-                if is_wildlife_confirmed:
-                    last_detection_time = current_time
-
-                val_to_show = int(float(val)) if val is not None else 0
-
-                # 마지막 감지 후 2초 동안은 불 켜진 상태(DETECT) 유지
-                if current_time - last_detection_time < 2.0:
+                if config.TEST_MODE:
+                    is_wildlife_confirmed = config.MOBILE_PRESSED
+                    val_to_show = int(float(val)) if val is not None else 0
                     if is_wildlife_confirmed:
-                        print(f'🐾 [동물 확정] ACF_R={acf_r_geo:.2f} >= 0.6, Val={val_to_show}')
-                    try:
-                        ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
-                    except Exception as e:
-                        print(f"⚠️ LCD 전송 오류: {e}")
+                        print(f'🐾 [실험 모드] 모바일 트리거 감지됨, Val={val_to_show}')
+                        try:
+                            ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                        except Exception as e:
+                            print(f"⚠️ LCD 전송 오류: {e}")
+                    else:
+                        try:
+                            ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
+                        except Exception as e:
+                            pass
                 else:
-                    # 2초가 지나면 감지 해제 (RESET)
-                    try:
-                        # 평상시에도 LCD에 val 값이 뜨도록 RESET 명령 뒤에 값을 붙여서 전송합니다.
-                        ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
-                    except Exception as e:
-                        pass
+                    is_wildlife_confirmed = (acf_r_geo >= 0.6)
+                    if is_wildlife_confirmed:
+                        last_detection_time = current_time
+
+                    val_to_show = int(float(val)) if val is not None else 0
+
+                    # 마지막 감지 후 2초 동안은 불 켜진 상태(DETECT) 유지
+                    if current_time - last_detection_time < 2.0:
+                        if is_wildlife_confirmed:
+                            print(f'🐾 [동물 확정] ACF_R={acf_r_geo:.2f} >= 0.6, Val={val_to_show}')
+                        try:
+                            ser.write(f"DETECT:{val_to_show}\n".encode('utf-8'))
+                        except Exception as e:
+                            print(f"⚠️ LCD 전송 오류: {e}")
+                    else:
+                        # 2초가 지나면 감지 해제 (RESET)
+                        try:
+                            # 평상시에도 LCD에 val 값이 뜨도록 RESET 명령 뒤에 값을 붙여서 전송합니다.
+                            ser.write(f"RESET:{val_to_show}\n".encode('utf-8'))
+                        except Exception as e:
+                            pass
 
                 last_render_time = current_time
 
