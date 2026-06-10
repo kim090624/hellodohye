@@ -48,9 +48,11 @@ class WildlifeUI:
 
         self.choice = None
         self._quit = False
+        self.cancel_requested = False  # 뒤로가기 버튼으로 취소 시 True
         self.manual_bands = []
         self.on_manual_band_change = None
         self.noise_band_patches = []
+        self._bg_tinted = False  # 배경 주황 tint 상태 추적
 
         self._build_header()
         self.content = None
@@ -60,19 +62,66 @@ class WildlifeUI:
     # 헤더 (항상 표시)
     # ══════════════════════════════════════════════
     def _build_header(self):
-        hdr = tk.Frame(self.root, bg=PANEL_BG, height=52)
-        hdr.pack(fill='x', side='top')
-        hdr.pack_propagate(False)
+        self._hdr = tk.Frame(self.root, bg=PANEL_BG, height=52)
+        self._hdr.pack(fill='x', side='top')
+        self._hdr.pack_propagate(False)
 
-        tk.Label(hdr, text='🐾 Wildlife Detection System',
+        tk.Label(self._hdr, text='Wildlife Detection System',
                  font=('Malgun Gothic', 13, 'bold'), fg=ACCENT, bg=PANEL_BG
                  ).pack(side='left', padx=18, pady=12)
 
-        tk.Button(hdr, text=' ✕  종료 ', command=self._on_quit,
+        tk.Button(self._hdr, text=' ✕  종료 ', command=self._on_quit,
                   font=('Malgun Gothic', 10, 'bold'), fg='white', bg=ACCENT,
                   relief='flat', padx=10, pady=4, cursor='hand2',
                   activebackground='#c0392b', activeforeground='white'
                   ).pack(side='right', padx=18, pady=10)
+
+        self._back_btn = tk.Button(
+            self._hdr, text=' ← 뒤로가기 ', command=self._on_back,
+            font=('Malgun Gothic', 10, 'bold'), fg='white', bg='#4a4a6a',
+            relief='flat', padx=10, pady=4, cursor='hand2',
+            activebackground='#6c5ce7', activeforeground='white'
+        )
+        # 처음엔 숨김 — 메뉴 화면에서는 뒤로가기 불필요
+        self._back_btn_visible = False
+
+    def _on_back(self):
+        """뒤로가기 버튼 클릭 시 현재 작업 취소 요청."""
+        self.cancel_requested = True
+        self._hide_back_btn()
+        self._reset_bg_tint()
+
+    def _show_back_btn(self):
+        if not self._back_btn_visible:
+            self._back_btn.pack(side='right', padx=8, pady=10)
+            self._back_btn_visible = True
+
+    def _hide_back_btn(self):
+        if self._back_btn_visible:
+            self._back_btn.pack_forget()
+            self._back_btn_visible = False
+
+    def _set_bg_tint(self, active: bool):
+        """배경을 은은한 주황빛으로 물들이거나 원래대로 복원."""
+        tint_color = '#7A2E00'  # 더 확연한 다크 오렌지/주황빛
+        if active and not self._bg_tinted:
+            self.root.configure(bg=tint_color)
+            if self.content:
+                self.content.configure(bg=tint_color)
+            if hasattr(self, 'live_fig'): self.live_fig.patch.set_facecolor(tint_color)
+            if hasattr(self, 'comp_fig'): self.comp_fig.patch.set_facecolor(tint_color)
+            self._bg_tinted = True
+        elif not active and self._bg_tinted:
+            self._reset_bg_tint()
+
+    def _reset_bg_tint(self):
+        self.root.configure(bg=BG)
+        if self.content:
+            try: self.content.configure(bg=BG)
+            except Exception: pass
+        if hasattr(self, 'live_fig'): self.live_fig.patch.set_facecolor(BG)
+        if hasattr(self, 'comp_fig'): self.comp_fig.patch.set_facecolor(BG)
+        self._bg_tinted = False
 
     # ══════════════════════════════════════════════
     # 콘텐츠 영역 교체
@@ -80,6 +129,8 @@ class WildlifeUI:
     def _clear(self):
         if self.content:
             self.content.destroy()
+        self._reset_bg_tint()
+        self.cancel_requested = False
         self.content = tk.Frame(self.root, bg=BG)
         self.content.pack(fill='both', expand=True)
 
@@ -88,13 +139,14 @@ class WildlifeUI:
     # ══════════════════════════════════════════════
     def _show_menu(self):
         self._clear()
+        self._hide_back_btn()  # 메뉴에서는 뒤로가기 숨김
         f = self.content
 
         # 중앙 정렬을 위한 컨테이너 (비는 공간 제거 및 상하좌우 완벽 센터링)
         center_frame = tk.Frame(f, bg=BG)
         center_frame.place(relx=0.5, rely=0.5, anchor='center')
 
-        tk.Label(center_frame, text='🐾 시스템 가동 모드 선택',
+        tk.Label(center_frame, text='시스템 가동 모드 선택',
                  font=('Malgun Gothic', 26, 'bold'), fg='#ffffff', bg=BG
                  ).pack(pady=(0, 6))
         tk.Label(center_frame, text='지오폰 및 이중 우물 확률 공명(SR) 분석 마스터 시스템',
@@ -161,12 +213,13 @@ class WildlifeUI:
     # ══════════════════════════════════════════════
     def show_recording_graph(self, title, subtitle):
         self._clear()
+        self._show_back_btn()  # 뒤로가기 버튼 표시
         f = self.content
 
         tk.Label(f, text=title,    font=('Malgun Gothic', 16, 'bold'), fg=TEXT,  bg=BG).pack(pady=(16, 2))
         tk.Label(f, text=subtitle, font=('Malgun Gothic', 11),         fg=MUTED, bg=BG).pack()
 
-        self._status = tk.Label(f, text='⏳ 준비 중...', font=('Malgun Gothic', 12, 'bold'),
+        self._status = tk.Label(f, text='준비 중...', font=('Malgun Gothic', 12, 'bold'),
                                 fg='#fdcb6e', bg=BG)
         self._status.pack(pady=4)
 
@@ -228,10 +281,11 @@ class WildlifeUI:
     # ══════════════════════════════════════════════
     def show_optimization_graph(self, env_noise, animal_signal=None):
         self._clear()
+        self._show_back_btn()  # 뒤로가기 버튼 표시
         f = self.content
 
-        tk.Label(f, text='📊 SR 파라미터 최적화 및 신호 검증 대시보드', font=('Malgun Gothic', 16, 'bold'), fg=TEXT, bg=BG).pack(pady=(16, 2))
-        self._opt_status = tk.Label(f, text='⏳ 준비 중...', font=('Malgun Gothic', 12, 'bold'), fg='#fdcb6e', bg=BG)
+        tk.Label(f, text='SR 파라미터 최적화 및 신호 검증 대시보드', font=('Malgun Gothic', 16, 'bold'), fg=TEXT, bg=BG).pack(pady=(16, 2))
+        self._opt_status = tk.Label(f, text='준비 중...', font=('Malgun Gothic', 12, 'bold'), fg='#fdcb6e', bg=BG)
         self._opt_status.pack(pady=4)
 
         self.fs          = config.FS
@@ -386,6 +440,7 @@ class WildlifeUI:
         self.on_manual_band_change = on_manual_band_change
         self.manual_bands = []
         self._clear()
+        self._show_back_btn()  # 뒤로가기 버튼 표시
         f = self.content
 
         self.fs          = config.FS
@@ -521,6 +576,10 @@ class WildlifeUI:
         mx_geo = np.max(np.abs(filtered_signal_geo - center_val)) if len(filtered_signal_geo) > 0 else 0
         mx = max(mx_geo, 20.0)
         self.ax1.set_ylim(center_val - mx * 1.3, center_val + mx * 1.3)
+        
+        show_len = self.buffer_size // 3
+        self.ax1.set_xlim(self.buffer_size - show_len, self.buffer_size - 1)
+        self.ax2.set_xlim(self.buffer_size - show_len, self.buffer_size - 1)
 
         # Step Event Text
         geo_status = "Rec..." if is_recording_geo else (f"{duration_geo:.2f}s" if step_completed_geo else "Wait")
@@ -540,24 +599,29 @@ class WildlifeUI:
 
         # Alarm triggering via logical-OR
         if config.TEST_MODE:
+            import time
             is_wildlife_geo = False
-            is_warning_geo = config.MOBILE_PRESSED
+            is_warning_geo = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
         else:
             is_wildlife_geo = (net_events_geo >= config.ALERT_NET_EVENTS) and (acf_r_geo >= config.ACF_R_THRESHOLD)
             is_warning_geo = (net_events_geo >= config.ALERT_NET_EVENTS)
 
-        if config.TEST_MODE and config.MOBILE_PRESSED:
-            self.alert_text.set_text('⚠️ [원격 테스트] 야생동물 감지됨 (MOBILE TRIGGER)')
-            self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#e67e22', edgecolor='none', alpha=0.97))
+        if config.TEST_MODE and is_warning_geo:
+            self.alert_text.set_text('야생동물 감지됨!')
+            self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#EA580C', edgecolor='none', alpha=0.97))
+            self._set_bg_tint(True)   # 배경 주황빛으로
         elif is_wildlife_geo:
-            self.alert_text.set_text(f'🚨 GEOPHONE CONFIRMED WILDLIFE! (Geo: R={acf_r_geo:.2f})')
+            self.alert_text.set_text(f'야생동물 감지됨! (R={acf_r_geo:.2f})')
             self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#d63031', edgecolor='none', alpha=0.97))
+            self._set_bg_tint(True)
         elif is_warning_geo:
-            self.alert_text.set_text(f'⚠️ WARNING: IMPACTS DETECTED (Geo) - Verifying Rhythm...')
+            self.alert_text.set_text('진동 감지 — 리듬 분석 중...')
             self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#e67e22', edgecolor='none', alpha=0.97))
+            self._set_bg_tint(False)
         else:
-            self.alert_text.set_text('📡 STATUS: MONITORING GEOPHONE')
+            self.alert_text.set_text('모니터링 중')
             self.alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#00b894', edgecolor='none', alpha=0.92))
+            self._set_bg_tint(False)
 
         # SR potential plots
         self.line_time_sr_geo.set_ydata(np.sign(x_arr_total_geo))
@@ -612,6 +676,7 @@ class WildlifeUI:
 
     def setup_comparison_detection(self):
         self._clear()
+        self._show_back_btn()  # 뒤로가기 버튼 표시
         f = self.content
 
         self.fs          = config.FS
@@ -669,6 +734,7 @@ class WildlifeUI:
         cv.draw()
         cv.get_tk_widget().pack(fill='both', expand=True)
         self.comp_canvas = cv
+        self.comp_fig = fig
         self.root.update()
 
     def update_comparison(self, display_signal, sr_sig1, N_t1, K_t1, nk1, r1, sr_sig2, N_t2, K_t2, nk2, r2):
@@ -688,23 +754,32 @@ class WildlifeUI:
             self.comp_acf_text2.set_text(f'ACF R: {r2:.2f}')
             
             if config.TEST_MODE:
+                import time
                 is_wildlife = False
-                is_warning_mode6 = config.MOBILE_PRESSED
+                is_warning_mode6 = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
             else:
                 is_wildlife = (r2 >= config.ACF_R_THRESHOLD)
                 is_warning_mode6 = False
 
-            if config.TEST_MODE and config.MOBILE_PRESSED:
-                self.comp_alert_text.set_text('⚠️ [원격 테스트] 야생동물 감지됨 (MOBILE TRIGGER)')
-                self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#e67e22', edgecolor='none', alpha=0.97))
+            if config.TEST_MODE and is_warning_mode6:
+                self.comp_alert_text.set_text('야생동물 감지됨!')
+                self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#EA580C', edgecolor='none', alpha=0.97))
+                self._set_bg_tint(True)
             elif is_wildlife:
-                self.comp_alert_text.set_text(f'🚨 ANIMAL DETECTED! (R={r2:.2f})')
+                self.comp_alert_text.set_text(f'야생동물 감지됨! (R={r2:.2f})')
                 self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#d63031', edgecolor='none', alpha=0.97))
+                self._set_bg_tint(True)
             else:
-                self.comp_alert_text.set_text('📡 STATUS: MONITORING')
+                self.comp_alert_text.set_text('모니터링 중')
                 self.comp_alert_text.set_bbox(dict(boxstyle='round,pad=0.5', facecolor='#00b894', edgecolor='none', alpha=0.92))
+                self._set_bg_tint(False)
 
             self.comp_canvas.draw()
+            
+            show_len = self.buffer_size // 3
+            for ax in self.comp_axes:
+                ax.set_xlim(self.buffer_size - show_len, self.buffer_size - 1)
+                
             self.comp_canvas.flush_events()
             self.root.update()
         except Exception:

@@ -42,8 +42,7 @@ import json
 
 class MobileSimulatorHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass # 터미널 출력을 깔끔하게 하기 위해 로그 출력 억제
-
+        pass # 콘솔 로그 출력 및 DNS 역방향 룩업으로 인한 치명적인 딜레이 제거
     def do_GET(self):
         if self.path in ('/', '/footstep_simulator.html'):
             try:
@@ -59,7 +58,9 @@ class MobileSimulatorHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(500, f"Error reading file: {e}")
         elif self.path == '/api/press':
             import config
+            import time
             config.MOBILE_PRESSED = True
+            config.MOBILE_PRESSED_TIME = time.time()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -81,6 +82,8 @@ def start_mobile_server():
     
     server_address = ('', 8000)
     try:
+        # DNS 역방향 룩업 딜레이가 제거되었으므로, Race Condition(순서 꼬임) 방지를 위해
+        # 반드시 요청이 들어온 순서대로 100% 직렬 처리하는 기본 HTTPServer를 사용합니다.
         httpd = http.server.HTTPServer(server_address, MobileSimulatorHandler)
         server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         server_thread.start()
@@ -447,6 +450,9 @@ def _run_env_noise_ui(ser, ui):
     while _time_module.time() - start < 1800.0:  # 30분(1800초) 동안 수집
         if not ui.is_alive(): 
             break  # 창을 닫아도 수집된 곳까지만이라도 무조건 저장하도록 변경
+        if ui.cancel_requested:
+            print("⏹ [1번] 배경 소음 수집 취소됨 — 메뉴로 복귀")
+            return
         while ser.in_waiting > 0:
             ln = ser.readline().decode('utf-8', errors='ignore').strip()
             if ln:
@@ -511,6 +517,9 @@ def _run_footstep_ui(ser, ui, env_noise_geo):
     last_print = 0.0
     while _time_module.time() - start < 30.0:
         if not ui.is_alive(): return None, None, None
+        if ui.cancel_requested:
+            print("⏹ [2번] 발걸음 수집 취소됨 — 메뉴로 복귀")
+            return None, None, None
         while ser.in_waiting > 0:
             ln = ser.readline().decode('utf-8', errors='ignore').strip()
             if ln:
@@ -570,6 +579,9 @@ def _run_footstep_ui(ser, ui, env_noise_geo):
     while not done_event.is_set():
         if not ui.is_alive():
             return None, None, None
+        if ui.cancel_requested:
+            print("⏹ [2번] 최적화 취소됨 — 메뉴로 복귀")
+            return None, None, None
         ui.root.update()
         _time_module.sleep(0.02)
 
@@ -625,6 +637,9 @@ def _run_file_optimize_ui(animal_geo, env_noise_geo, ui):
     while not done_event.is_set():
         if not ui.is_alive():
             return None
+        if ui.cancel_requested:
+            print("⏹ [3번] 최적화 취소됨 — 메뉴로 복귀")
+            return None
         ui.root.update()
         _time_module.sleep(0.02)
 
@@ -674,6 +689,9 @@ def _run_record_ui(ser, ui):
     last_print = 0.0
     while _time_module.time() - start < dur:
         if not ui.is_alive(): return
+        if ui.cancel_requested:
+            print("⏹ [4번] 신호 녹화 취소됨 — 메뉴로 복귀")
+            return
         while ser.in_waiting > 0:
             ln = ser.readline().decode('utf-8', errors='ignore').strip()
             if ln:
@@ -814,11 +832,16 @@ def main():
             _run_record_ui(ser, ui)
 
         elif choice == '5' or choice == '6':
-            break   # 실시간 감지 또는 비교 모드로 진입
+            _run_realtime_pipeline(choice, ser, ui, opt_a_geo, opt_b_geo, opt_sigma_geo)
 
     if not ui.is_alive():
-        ser.close()
+        try: ser.close()
+        except: pass
         return
+
+def _run_realtime_pipeline(choice, ser, ui, opt_a_geo, opt_b_geo, opt_sigma_geo):
+    """실시간 감지(5번) 및 비교 분석(6번)을 위한 공통 파이프라인"""
+    import time
 
     # ── 파이프라인 컴포넌트 (공통) ───────────────────────────
     # 지오폰 채널 영점 보정
@@ -861,6 +884,9 @@ def main():
         
         try:
             while ui.is_alive():
+                if ui.cancel_requested:
+                    print("⏹ [6번] 비교 감지 취소됨 — 메뉴로 복귀")
+                    break
                 data_updated = False
                 while ser.in_waiting > 0:
                     ln = ser.readline().decode('utf-8', errors='ignore').strip()
@@ -868,6 +894,18 @@ def main():
                         val = parse_serial_line(ln, 0)
                         if val is not None:
                             raw_centered = float(val) - zero_geo
+                            if config.TEST_MODE:
+                                import time
+                                _is_pressed = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
+                                if not _is_pressed:
+                                    # 안됐을 때: 너무 얌전하다는 피드백에 따라 원본 신호를 2.5배 증폭
+                                    raw_centered *= 2.5
+                                    val = zero_geo + raw_centered
+                                else:
+                                    # 됐을 때: 폭발적인 노이즈 강도를 추가로 2배 낮춤
+                                    pulse = 0.5 + 1.0 * abs(np.sin(time.time() * 5.0))
+                                    raw_centered = (raw_centered * 2.0) + np.random.normal(0, 3.5 * getattr(config, 'MOBILE_NOISE_SCALE', 1) * pulse)
+                                    val = zero_geo + raw_centered
                             if _dc_ema_geo[0] is None: _dc_ema_geo[0] = raw_centered
                             else: _dc_ema_geo[0] = (1.0 - _DC_ALPHA) * _dc_ema_geo[0] + _DC_ALPHA * raw_centered
                             data_buffer_geo.append(raw_centered - _dc_ema_geo[0])
@@ -877,20 +915,27 @@ def main():
                 current_time = time.time()
                 if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE and (current_time - last_render_time >= config.RENDER_INTERVAL):
                     signal_geo = np.array(data_buffer_geo)
-                    signal_geo = signal_geo * (1.0 - np.exp(-np.abs(signal_geo) / 2.5))
                     
                     filtered_signal_geo, _, _, _ = sdft_filter_geo.process(signal_geo)
                     
                     wn1 = np.random.normal(0, opt_sigma_geo1, len(filtered_signal_geo))
+                    wn2 = np.random.normal(0, opt_sigma_geo2, len(filtered_signal_geo))
+                    
+                    if config.TEST_MODE:
+                        import time
+                        _is_pressed = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
+                        if not _is_pressed:
+                            wn1 *= 1.25
+                            wn2 *= 1.25
                     x_tot1, _, n1, k1 = bistable_engine1.process_buffer(filtered_signal_geo, wn1)
                     nk1 = max(0, n1 - k1)
                     r1, _ = acf_analyzer1.compute(np.sign(x_tot1))
                     
-                    wn2 = np.random.normal(0, opt_sigma_geo2, len(filtered_signal_geo))
                     x_tot2, _, n2, k2 = bistable_engine2.process_buffer(filtered_signal_geo, wn2)
                     nk2 = max(0, n2 - k2)
                     r2, _ = acf_analyzer2.compute(np.sign(x_tot2))
-                    
+
+                    # (N, K 하드코딩 덮어쓰기 로직 삭제 - 자연스럽게 순차적으로 쌓이게 함)
                     ui.update_comparison(
                         np.array(raw_val_buffer_geo),
                         np.sign(x_tot1), n1, k1, nk1, r1,
@@ -926,8 +971,7 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
-            ser.close()
-            ui.close()
+            ui._reset_bg_tint()
         return
 
     # ── 실시간 감지 루프 (Mode 5) ───────────────────────────
@@ -952,6 +996,9 @@ def main():
 
     try:
         while ui.is_alive():
+            if ui.cancel_requested:
+                print("⏹ [5번] 실시간 감지 취소됨 — 메뉴로 복귀")
+                break
             data_updated = False
             # 쌓인 데이터를 모두 읽어서 버퍼에 정상적인 속도(100Hz)로 채웁니다.
             while ser.in_waiting > 0:
@@ -960,6 +1007,17 @@ def main():
                     val = parse_serial_line(ln, 0)
                     if val is not None:
                         raw_centered = float(val) - zero_geo
+                        if config.TEST_MODE:
+                            import time
+                            _is_pressed = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
+                            if not _is_pressed:
+                                raw_centered *= 2.5
+                                val = zero_geo + raw_centered
+                            else:
+                                pulse = 0.5 + 1.0 * abs(np.sin(time.time() * 5.0))
+                                raw_centered = (raw_centered * 2.0) + np.random.normal(0, 3.5 * getattr(config, 'MOBILE_NOISE_SCALE', 1) * pulse)
+                                val = zero_geo + raw_centered
+                            
                         # EMA로 저주파 드리프트(DC bias)를 추적하고 실시간 제거
                         if _dc_ema_geo[0] is None:
                             _dc_ema_geo[0] = raw_centered
@@ -970,24 +1028,26 @@ def main():
                         data_updated = True
 
             current_time = time.time()
-            # 버퍼가 완전히 채워진 뒤에만 분석 시작 (초기 0-패딩 왜곡 방지 및 Matplotlib 플롯 크기 불일치 방지)
-            if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE and \
-                    (current_time - last_render_time >= config.RENDER_INTERVAL):
+            if data_updated and len(data_buffer_geo) >= config.BUFFER_SIZE and (current_time - last_render_time >= config.RENDER_INTERVAL):
                 # 1. 지오폰 분석 파이프라인
                 raw_signal_geo = np.array(data_buffer_geo)
-                # EMA DC 제거를 이미 버퍼 단계에서 수행했으므로 추가 mean subtraction 불필요
                 signal_geo = raw_signal_geo
-                # 미세 진동 강조용 비선형 스케일링 (선택적)
-                signal_geo = signal_geo * (1.0 - np.exp(-np.abs(signal_geo) / 2.5))
                 
                 act_idx_geo, is_rec_geo, step_comp_geo, dur_geo, durations_geo = step_analyzer_geo.analyze(signal_geo, current_time)
                 avg_dur_geo = sum(durations_geo)/len(durations_geo) if durations_geo else 0.0
                 filtered_signal_geo, M_t_geo, clean_fft_mag_geo, transient_detected_geo = sdft_filter_geo.process(signal_geo)
                 
                 white_noise_geo = np.random.normal(0, opt_sigma_geo, len(filtered_signal_geo))
+                
+                if config.TEST_MODE:
+                    import time
+                    _is_pressed = config.MOBILE_PRESSED or (hasattr(config, 'MOBILE_PRESSED_TIME') and time.time() - config.MOBILE_PRESSED_TIME < 0.2)
+                    if not _is_pressed:
+                        white_noise_geo *= 1.25
                 x_arr_tot_geo, x_arr_noi_geo, N_t_geo, K_t_geo = bistable_engine_geo.process_buffer(filtered_signal_geo, white_noise_geo)
                 net_events_geo = max(0, N_t_geo - K_t_geo)
                 
+                # (N, K 하드코딩 덮어쓰기 로직 삭제 - 자연스럽게 순차적으로 쌓이게 함)
                 telegraph_signal_geo = np.sign(x_arr_tot_geo)
                 acf_r_geo, cadence_geo = acf_analyzer_geo.compute(telegraph_signal_geo)
 
@@ -1052,12 +1112,16 @@ def main():
             ui.root.update()
             time.sleep(0.001)
 
+            ui.root.update()
+            time.sleep(0.001)
+
     except KeyboardInterrupt:
         print('파이프라인 종료...')
     finally:
-        ser.close()
-        ui.close()
-
+        # ser.close() 와 ui.close()는 _run_realtime_pipeline에서 하면
+        # 메뉴로 돌아갈 때 연결이 끊기므로 제거합니다.
+        ui._reset_bg_tint()  # 틴트 초기화
+        return
 
 if __name__ == '__main__':
     main()
