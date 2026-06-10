@@ -56,7 +56,7 @@ class MobileSimulatorHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(content)
             except Exception as e:
                 self.send_error(500, f"Error reading file: {e}")
-        elif self.path == '/api/press':
+        elif self.path.startswith('/api/press'):
             import config
             import time
             config.MOBILE_PRESSED = True
@@ -65,7 +65,7 @@ class MobileSimulatorHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "pressed"}).encode())
-        elif self.path == '/api/release':
+        elif self.path.startswith('/api/release'):
             import config
             config.MOBILE_PRESSED = False
             self.send_response(200)
@@ -95,9 +95,12 @@ def start_mobile_server():
             s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
+            hostname = socket.gethostname()
+            print(f"   👉 [기본 주소] http://{local_ip}:8000/footstep_simulator.html")
+            print(f"   👉 [고정 주소] http://{hostname}.local:8000/footstep_simulator.html")
+            print("      (숫자 주소가 자꾸 바뀌어서 불편하다면, 와이파이 설정에서 '고정 IP'로 설정하시면 됩니다)\n")
         except:
-            local_ip = "localhost"
-        print(f"   👉 http://{local_ip}:8000/footstep_simulator.html\n")
+            print(f"   👉 http://localhost:8000/footstep_simulator.html\n")
     except Exception as e:
         print(f"⚠️ 모바일 웹 서버 기동 실패 (포트 8000이 사용 중일 수 있음): {e}")
 

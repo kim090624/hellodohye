@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title></title>
+    <title>모바일 시뮬레이터</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-touch-callout: none; }
         body, html { 
             width: 100%; height: 100%; 
-            background-color: #000000; /* 완벽한 암전 */
+            background-color: #808080; /* 회색으로 변경 */
             overflow: hidden; cursor: default; 
             -webkit-tap-highlight-color: transparent;
-            touch-action: none; /* 아이패드/iOS에서 Pointer Event 정상 작동 필수 옵션 */
+            touch-action: none;
         }
     </style>
 </head>
@@ -20,27 +20,32 @@
         let isPressed = false;
         
         function pressDown(e) {
-            e.preventDefault();
+            if (e && e.preventDefault) e.preventDefault();
             if (isPressed) return;
             isPressed = true;
             if (navigator.vibrate) navigator.vibrate([30, 30, 60]);
-            fetch(['/a', 'pi/', 'pr', 'ess'].join('')).catch(e => {});
+            fetch('/api/press?t=' + Date.now(), { cache: 'no-store' }).catch(e => {});
         }
         
         function pressUp(e) {
-            e.preventDefault();
+            if (e && e.preventDefault) e.preventDefault();
             if (!isPressed) return;
             isPressed = false;
             if (navigator.vibrate) navigator.vibrate(20);
-            fetch(['/a', 'pi/', 'rel', 'ease'].join('')).catch(e => {});
+            fetch('/api/release?t=' + Date.now(), { cache: 'no-store' }).catch(e => {});
         }
 
         const b = document.body;
-        // 터치/마우스 중복 발생을 막기 위해 통합된 Pointer 이벤트 사용
-        b.addEventListener('pointerdown', pressDown, {passive: false});
-        b.addEventListener('pointerup', pressUp, {passive: false});
-        b.addEventListener('pointercancel', pressUp, {passive: false});
-        b.addEventListener('pointerout', pressUp, {passive: false});
+        // 터치 기기용 이벤트
+        b.addEventListener('touchstart', pressDown, {passive: false});
+        b.addEventListener('touchend', pressUp, {passive: false});
+        b.addEventListener('touchcancel', pressUp, {passive: false});
+        
+        // PC 마우스용 이벤트
+        b.addEventListener('mousedown', pressDown);
+        b.addEventListener('mouseup', pressUp);
+        b.addEventListener('mouseleave', pressUp);
+        
         b.addEventListener('contextmenu', (e) => { e.preventDefault(); });
     </script>
 </body>
